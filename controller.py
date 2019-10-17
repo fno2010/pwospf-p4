@@ -62,6 +62,7 @@ class PWOSPFController(Thread):
     def run(self):
         # sniff(iface=self.iface, prn=self.handlePkt, stop_event=self.stop_event)
         # TODO: listen on control port
+        pass
 
     def start(self, *args, **kwargs):
         super(PWOSPFController, self).start(*args, **kwargs)

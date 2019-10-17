@@ -113,7 +113,12 @@ control PWOSPFIngress(inout headers hdr,
     }
 
     apply {
-        // TODO: main process of router
+        if (hdr.arp.isValid()) {
+            arp_table.apply();
+        } else if (hdr.ipv4.isValid()) {
+            local_ip_table.apply();
+            routing_table.apply();
+        }
     }
 }
 
@@ -148,6 +153,9 @@ control PWOSPFComputeChecksum(inout headers hdr, inout metadata meta) {
 
 control PWOSPFDeparser(packet_out pkt, in headers hdr) {
     apply {
+        pkt.emit(hdr.ethernet);
+        pkt.emit(hdr.arp);
+        pkt.emit(hdr.ipv4);
     }
 }
 
