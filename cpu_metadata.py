@@ -6,10 +6,23 @@ from scapy.layers.l2 import Ether, ARP
 TYPE_CPU_METADATA = 0x080a
 
 class CPUMetadata(Packet):
+    """
+    header cpu_metadata_t {
+        bit<1> fromCpu;
+        bit<1> multiCast;
+        bit<5> reserved;
+        port_t ingressPort;
+        bit<16> egressPort;
+        bit<16> origEtherType;
+    }
+    """
     name = "CPUMetadata"
-    fields_desc = [ ByteField("fromCpu", 0),
-                    ShortField("origEtherType", None),
-                    ShortField("srcPort", None)]
+    fields_desc = [ BitField("fromCpu", 0),
+                    BitField("multiCast", 0),
+                    BitField("reserved", 0, 5),
+                    BitField("ingressPort", 0, 9),
+                    ShortField("egressPort", None),
+                    ShortField("origEtherType", None)]
 
 bind_layers(Ether, CPUMetadata, type=TYPE_CPU_METADATA)
 bind_layers(CPUMetadata, IP, origEtherType=0x0800)

@@ -1,10 +1,14 @@
 /* -*- P4_16 -*- */
+/***********************************
+  Common Packet Headers Definition
+************************************/
 
 const bit<16> ARP_OP_REQ        = 0x0001;
 const bit<16> ARP_OP_REPLY      = 0x0002;
 
 const bit<16> TYPE_ARP          = 0x0806;
 const bit<16> TYPE_IPV4         = 0x0800;
+const bit<16> TYPE_CPU_METADATA = 0x080a;
 
 typedef bit<9>  port_t;
 typedef bit<48> macAddr_t;
@@ -41,4 +45,13 @@ header ipv4_t {
     bit<16>   hdrChecksum;
     ipv4Addr_t srcAddr;
     ipv4Addr_t dstAddr;
+}
+
+header cpu_metadata_t {
+    bit<1> fromCpu;
+    bit<1> multiCast;
+    bit<5> reserved;
+    port_t ingressPort;
+    bit<16> egressPort;
+    bit<16> origEtherType;
 }

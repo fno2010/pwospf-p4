@@ -26,6 +26,7 @@ class PWOSPFRouter(P4RuntimeSwitch):
         if 'ctrl_args' in kwargs:
             self.ctrl_args = kwargs['ctrl_args']
             del kwargs['ctrl_args']
+        self.ctrl_port = self.ctrl_args.get('ctrl_port', 1)
 
         kwargs.update({
             'enable_grpc': enable_grpc,
@@ -37,11 +38,20 @@ class PWOSPFRouter(P4RuntimeSwitch):
 
         P4RuntimeSwitch.__init__(self, *opts, **kwargs)
 
+    def addDefaultMulticastGroups(self):
+        self.flood_mgid = 1
+        data_ports = [p for p in self.infs.keys() if p not in [0, self.ctrl_port]]
+        self.addMulticastGroup(mgid=self.flood_mgid, ports=data_ports)
+        for pt in data_ports:
+            flood_ports = [p for p in data_ports if p != pt]
+            self.addMulticastGroup(mgid=pt, ports=flood_ports)
+
     def initTable(self):
         pass
 
     def start(self, controllers):
         super(PWOSPFRouter, self).start(controllers)
+        self.addDefaultMulticastGroups()
         self.initTable()
         self.controller = PWOSPFController(self, **self.ctrl_args)
         self.controller.start()
