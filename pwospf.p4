@@ -71,7 +71,7 @@ control PWOSPFIngress(inout headers hdr,
     }
 
     action flood() {
-        standard_metadata.mcast_grp = standard_metadata.ingress_port;
+        standard_metadata.mcast_grp = (bit<16>) standard_metadata.ingress_port;
     }
 
     action ipv4_forward(macAddr_t dstAddr, port_t port) {

@@ -1,11 +1,12 @@
 from threading import Thread, Event
-from scapy.all import sniff, sendp
+from scapy.all import sendp
 from scapy.all import Packet, Ether, IP, ARP
 # from async_sniff import sniff
 from cpu_metadata import CPUMetadata
 import time
 
 from mininet.log import lg, LEVELS
+from async_sniff import AsyncSniffer
 
 ARP_OP_REQ   = 0x0001
 ARP_OP_REPLY = 0x0002
@@ -17,7 +18,7 @@ class PWOSPFController(Thread):
         self.start_wait = start_wait # time to wait for the controller to be listenning
         self.iface = sw.intfs[ctrl_port].name
         self.arp_table = dict()
-        self.stop_event = Event()
+        self.sniffer = None
 
     def updateArpTable(self, ip, mac):
         if ip in self.arp_table: return
@@ -56,12 +57,15 @@ class PWOSPFController(Thread):
 
     def run(self):
         # listen on control port
-        sniff(iface=self.iface, prn=self.onPacket, stop_event=self.stop_event)
+        # sniff(iface=self.iface, prn=self.onPacket, stop_event=self.stop_event)
+        self.sniffer = AsyncSniffer(iface=self.iface, prn=self.onPacket)
+        self.sniffer.start()
 
     def start(self, *args, **kwargs):
         super(PWOSPFController, self).start(*args, **kwargs)
         time.sleep(self.start_wait)
 
     def join(self, *args, **kwargs):
-        self.stop_event.set()
+        if self.sniffer:
+            self.sniffer.stop()
         super(PWOSPFController, self).join(*args, **kwargs)

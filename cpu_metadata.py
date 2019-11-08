@@ -17,8 +17,8 @@ class CPUMetadata(Packet):
     }
     """
     name = "CPUMetadata"
-    fields_desc = [ BitField("fromCpu", 0),
-                    BitField("multiCast", 0),
+    fields_desc = [ BitField("fromCpu", 0, 1),
+                    BitField("multiCast", 0, 1),
                     BitField("reserved", 0, 5),
                     BitField("ingressPort", 0, 9),
                     ShortField("egressPort", None),

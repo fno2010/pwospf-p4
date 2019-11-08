@@ -40,11 +40,17 @@ class PWOSPFRouter(P4RuntimeSwitch):
 
     def addDefaultMulticastGroups(self):
         self.flood_mgid = 1
-        data_ports = [p for p in self.infs.keys() if p not in [0, self.ctrl_port]]
+        data_ports = [p for p in self.intfs.keys() if p not in [0, self.ctrl_port]]
         self.addMulticastGroup(mgid=self.flood_mgid, ports=data_ports)
         for pt in data_ports:
             flood_ports = [p for p in data_ports if p != pt]
             self.addMulticastGroup(mgid=pt, ports=flood_ports)
+    
+    def addL3Route(self, ip, mac, next_hop):
+        self.sw.insertTableEntry(table_name='PWOSPFIngress.routing_table',
+                match_fields={'hdr.ipv4.dstAddr': [ip]},
+                action_name='PWOSPFIngress.ipv4_forwarding',
+                action_params={'dstAddr': mac, 'port': next_hop})
 
     def initTable(self):
         pass
