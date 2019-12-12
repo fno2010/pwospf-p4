@@ -266,7 +266,7 @@ class PWOSPFLSUManager(object):
             lg.warn('PWOSPF LSU Manager has not been started yet')
 
 class PWOSPFController(Thread):
-    def __init__(self, sw, ctrl_port=1, start_wait=5, timeout=1, arp_timeout=600):
+    def __init__(self, sw, ctrl_port=1, start_wait=1, timeout=1, arp_timeout=600):
         super(PWOSPFController, self).__init__()
         self.sw = sw
         self.start_wait = start_wait # time to wait for the controller to be listenning

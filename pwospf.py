@@ -55,7 +55,7 @@ class PWOSPFPort(object):
         self.stop_event = Event()
         self.lasthellotime = datetime(1900, 1, 1) # very early time
 
-    def config(self, ip=None):
+    def config(self, ip=None, helloint=None, **kwargs):
         if '/' in ip:
             self.ipaddr, self.prefixlen = ip.split('/')
             self.prefixlen = int(self.prefixlen)
@@ -63,6 +63,8 @@ class PWOSPFPort(object):
             self.ipaddr = ip
             self.prefixlen = self.defaultPrefixlen
         self.netmask = 0xffffffff ^ (0xffffffff >> self.prefixlen)
+        if helloint is not None:
+            self.helloint = helloint
 
     def addNeighbor(self, neigh_id, neigh_ip):
         """
