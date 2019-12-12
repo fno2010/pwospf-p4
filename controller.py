@@ -1,71 +1,409 @@
-from threading import Thread, Event
-from scapy.all import sendp
-from scapy.all import Packet, Ether, IP, ARP
-# from async_sniff import sniff
-from cpu_metadata import CPUMetadata
 import time
+import traceback
+from datetime import datetime, timedelta
+from threading import Thread, Event, Lock
+from Queue import Queue
+
+from scapy.all import sendp
+from scapy.all import Packet, Ether, IP, ARP, ICMP
+from cpu_metadata import CPUMetadata1 as CPUMetadata
+from cpu_metadata import TYPE_CPU_METADATA
 
 from mininet.log import lg, LEVELS
 from async_sniff import AsyncSniffer
+from arp_manager import ARPManager
+from pwospf_proto import PWOSPF_Hdr, PWOSPF_Hello, PWOSPF_LSU, PWOSPF_LSA
+from utils import Graph, ipprefix
 
 ARP_OP_REQ   = 0x0001
 ARP_OP_REPLY = 0x0002
 
+ICMP_TYPE_ECHO  = 0x08
+ICMP_TYPE_REPLY = 0x00
+
+MAX_PENDING_QUEUE_SIZE = 65535
+
+class PendingProcessor(object):
+    def __init__(self, sw, timeout=None):
+        self.sw = sw
+        self.running = False
+        self.thread = None
+        self.stop_event = Event()
+        self.timeout = timeout or self.sw.controller.timeout
+        self.pending_queue = Queue(maxsize=MAX_PENDING_QUEUE_SIZE)
+        self.lock = Lock()
+    
+    def _setup_thread(self):
+        self.thread = Thread(target=self._run)
+        self.thread.setDaemon(True)
+    
+    def future_send(self, pkt, expiry):
+        self.lock.acquire()
+        self.pending_queue.put((pkt, expiry))
+        self.lock.release()
+    
+    def fetch_packet(self):
+        self.lock.acquire()
+        pkt, expiry = self.pending_queue.get()
+        self.lock.release()
+        return pkt, expiry
+    
+    def _run(self):
+        self.running = True
+        try:
+            while True:
+                if self.stop_event and self.stop_event.is_set():
+                    break
+                if not self.pending_queue.empty():
+                    pkt, expiry = self.fetch_packet()
+                    if time.time() > expiry:
+                        lg.info('Timeout to get ARP\n')
+                    else:
+                        arp_entry = self.sw.controller.arp_manager.arp_table.get(pkt[IP].dst)
+                        if arp_entry is None:
+                            self.future_send(pkt, expiry)
+                        else:
+                            pkt[Ether].dst = arp_entry['mac']
+                            lg.info('%s send out pending packet\n' % self.sw.name)
+                            self.sw.controller.send(pkt, pkt[CPUMetadata].egressPort)
+        except KeyboardInterrupt:
+            pass
+
+    def start(self):
+        self._setup_thread()
+        self.thread.start()
+
+    def stop(self):
+        if self.running:
+            self.stop_event.set()
+            if self.thread:
+                self.thread.join()
+                self.running = False
+        else:
+            lg.warn('Pending Processor has not been started yet')
+
+class PWOSPFLSUManager(object):
+    def __init__(self, sw):
+        self.sw = sw
+        self.running = False
+        self.thread = None
+        self.stop_event = Event()
+        self.lastlsutime = datetime(1900, 1, 1) # very early time
+        self.lsdb = dict()
+        self.lsulock = Lock()
+        self.seq = 0
+    
+    def _setup_thread(self):
+        self.thread = Thread(target=self._run)
+        self.thread.setDaemon(True)
+
+    def _run(self):
+        self.running = True
+        try:
+            while True:
+                if self.stop_event and self.stop_event.is_set():
+                    break
+                if datetime.now() >= self.lastlsutime + timedelta(seconds=self.sw.lsunit):
+                    self._flood_lsu()
+                    self.lastlsutime = datetime.now()
+                for rid, lsa in self.lsdb.items():
+                    if datetime.now() > lsa['lasttime'] + timedelta(seconds=self.sw.lsunit * 3):
+                        # wait for 3 times lsunit and then timeout
+                        del self.lsdb[rid]
+        except KeyboardInterrupt:
+            pass
+    
+    def _flood_lsu(self):
+        lsalist = []
+        for p in self.sw.data_ports.values():
+            # print(self.sw.name, p.intf.name, p.neighbors)
+            if not len(p.neighbors):
+                lsalist.append(PWOSPF_LSA(subnet=p.Hex2IP(p.MaskedIPHex()), mask=p.Netmask(), routerid='0.0.0.0'))
+            else:
+                for neigh in p.neighbors.keys():
+                    lsalist.append(PWOSPF_LSA(subnet=p.Hex2IP(p.MaskedIPHex(neigh[1])), mask=p.Netmask(), routerid=neigh[0]))
+
+        lsu_pkt = PWOSPF_Hdr(routerid=self.sw.router_id, areaid=self.sw.area_id) / PWOSPF_LSU(seq=self.seq, lsalist=lsalist)
+        eth_pkt = Ether() / IP() / lsu_pkt
+        self.lsulock.acquire()
+        self.lsdb[self.sw.router_id] = {
+            'seq': self.seq,
+            'lasttime': datetime.now(),
+            'networks': [(lsa.subnet, lsa.mask, lsa.routerid) for lsa in lsalist]
+        }
+        self.lsulock.release()
+        self.seq += 1
+        self.sw.controller.send(eth_pkt, 1, multicast=True)
+
+    def start(self):
+        self._setup_thread()
+        self.thread.start()
+    
+    def handleLSU(self, pkt):
+        """
+        Handling Incoming LSU Packets
+
+        Each received LSU packet must go through the following handling procedure.
+        If the LSU was originally generated by the incoming router, the packet is
+        dropped.  If the sequence number matches that of the last packet received
+        from the sending host, the packet is dropped.  If the packet contents are
+        equivalent to the contents of the packet last received from the sending host,
+        the host's database entry is updated and the packet is ignored.  If the LSU
+        is from a host not currently in the database, the packets contents are used
+        to update the database and Djikstra's algorithm is used to recompute the
+        forwarding table.  Finally, if the LSU data is for a host currently in the
+        database but the information has changed, the LSU is used to update the
+        database, and Djikstra's algorithm is run to recompute the forwarding table.
+
+        All received packets with new sequence numbers are flooded to all neighbors
+        but the incoming neighbor of the packet.  The TTL header is only checked
+        in the forwarding stage and should not be considered when handling the packet
+        locally.  The TTL field of all flooded packets must be decremented before
+        exiting the router.  If the field after decrement is zero or less, the packet
+        must not be flooded.
+        """
+        rid = pkt[PWOSPF_Hdr].routerid
+        # check if generated by myself
+        if rid == self.sw.router_id:
+            return
+        # check if new seq
+        if rid in self.lsdb and pkt[PWOSPF_LSU].seq == self.lsdb[rid]['seq']:
+            return
+        self.lsulock.acquire()
+        # update lsu in database
+        # print(self.sw.name, pkt[PWOSPF_LSU])
+        self.lsdb[rid] = {
+            'seq': pkt[PWOSPF_LSU].seq,
+            'lasttime': datetime.now(),
+            'networks': [(lsa.subnet, lsa.mask, lsa.routerid) for lsa in pkt[PWOSPF_LSU].lsalist]
+        }
+        # flood received lsu
+        pkt[PWOSPF_LSU].ttl -= 1
+        for pn, p in self.sw.data_ports.items():
+            if not p.neighbors:
+                continue
+            if pn == pkt[CPUMetadata].ingressPort:
+                continue
+            if pkt[PWOSPF_LSU].ttl > 0:
+                self.sw.controller.send(pkt, pn)
+        # update forwarding table
+        try:
+            self.updateRoutingTable()
+            self.syncRoutingTable()
+        except:
+            traceback.print_exc()
+        # print(self.sw.pwospf_table)
+        self.lsulock.release()
+    
+    def updateRoutingTable(self):
+        """
+        Update routing table using distributed Djistra algorithm.
+        """
+        g = Graph()
+        networks = {}
+        # print(self.sw.name, self.lsdb)
+        for rid, lsa in self.lsdb.items():
+            for neigh in lsa['networks']:
+                # rid, neigh[2]
+                subnet, netmask, neighid = neigh
+                g.add_edge(rid, neighid)
+                netaddr = ipprefix(subnet, netmask)
+                if netaddr not in networks:
+                    networks[netaddr] = set()
+                networks[netaddr].add(rid)
+        # print(self.sw.name, g.adj)
+        # print(self.sw.name, networks)
+        next_hops = g.find_shortest_paths(self.sw.router_id)
+        # print(self.sw.name, next_hops)
+        for netaddr, nodes in networks.items():
+            if len(nodes) == 1:
+                dst = nodes.pop()
+                if dst == self.sw.router_id:
+                    nhop = None
+                else:
+                    nhop, _ = next_hops.get(dst, (None, None))
+            elif len(nodes) == 2:
+                n1, n2 = nodes
+                if self.sw.router_id in nodes:
+                    dst = nhop = (n2 if n1 == self.sw.router_id else n1)
+                else:
+                    dst = (n1 if next_hops[n1][1] < next_hops[n2][1] else n2)
+                    nhop, _ = next_hops[dst]
+            for pn, p in self.sw.data_ports.items():
+                gateway = p.ownNeigh(nhop)
+                if ipprefix(p.IP(), p.Netmask()) == netaddr:
+                    gateway = '0.0.0.0'
+                if gateway is not None:
+                    r = (netaddr, gateway, pn)
+                    self.sw.pending_pwospf_table[netaddr] = r
+    
+    def syncRoutingTable(self):
+        """
+        Synchronize routing table from memory to data plane.
+        """
+        for netaddr in self.sw.pending_pwospf_table:
+            if netaddr in self.sw.static_routes:
+                continue
+            r = self.sw.pending_pwospf_table[netaddr]
+            if r != self.sw.pwospf_table.get(netaddr):
+                if netaddr in self.sw.pwospf_table:
+                    self.sw.removeL3Route(netaddr)
+                self.sw.addL3Route(r[0], r[2], r[1])
+                self.sw.pwospf_table[netaddr] = r
+        deleted_routes = [netaddr for netaddr in self.sw.pwospf_table
+                          if netaddr not in self.sw.pending_pwospf_table]
+        for netaddr in deleted_routes:
+            del self.sw.pwospf_table[netaddr]
+        self.sw.pending_pwospf_table = dict()
+    
+    def stop(self):
+        if self.running:
+            self.stop_event.set()
+            if self.thread:
+                self.thread.join()
+                self.running = False
+        else:
+            lg.warn('PWOSPF LSU Manager has not been started yet')
+
 class PWOSPFController(Thread):
-    def __init__(self, sw, ctrl_port=1, start_wait=0.3):
+    def __init__(self, sw, ctrl_port=1, start_wait=0.3, timeout=1, arp_timeout=600):
         super(PWOSPFController, self).__init__()
         self.sw = sw
         self.start_wait = start_wait # time to wait for the controller to be listenning
+        self.timeout = timeout # timeout for pending packet
+        self.arp_timeout = arp_timeout # arp entry living time in seconds
         self.iface = sw.intfs[ctrl_port].name
-        self.arp_table = dict()
+        self.routing_table = dict()
         self.sniffer = None
-
-    def updateArpTable(self, ip, mac):
-        if ip in self.arp_table: return
-
-        self.sw.insertTableEntry(table_name='PWOSPFIngress.arp_table',
-                match_fields={'hdr.arp.dstIP': [ip]},
-                action_name='PWOSPFIngress.arp_reply',
-                action_params={'eth': mac})
-        self.arp_table[ip] = mac
-
-    # def handleArpRequest(self, pkt):
-    #     self.addMacAddr(pkt[ARP].hwsrc, pkt[CPUMetadata].srcPort)
-    #     self.send(pkt)
+        self.arp_manager = ARPManager(self.sw)
+        self.pwospf_running = False
+        self.pwospf_manager = PWOSPFLSUManager(self.sw)
+        self.pending_processor = PendingProcessor(self.sw, timeout=self.timeout)
 
     def onPacket(self, pkt):
         if lg.getEffectiveLevel() <= LEVELS['debug']:
             pkt.show2()
-        assert CPUMetadata in pkt, "Should only receive packets from switch with special header"
+        if CPUMetadata not in pkt:
+            lg.warn("Should only receive packets from switch with special header")
+            return
 
         # Ignore packets that the CPU sends:
         if pkt[CPUMetadata].fromCpu == 1: return
 
         if ARP in pkt:
             if pkt[ARP].op == ARP_OP_REPLY:
-                self.updateArpTable(pkt[ARP].psrc, pkt[ARP].hwsrc)
-                self.send(pkt, pkt[CPUMetadata].ingressPort, multicast=1)
+                self.arp_manager.updateArpTable(pkt[ARP].psrc, pkt[ARP].hwsrc)
+                # self.send(pkt, 0)
+            elif pkt[ARP].op == ARP_OP_REQ:
+                self.arp_manager.updateArpTable(pkt[ARP].psrc, pkt[ARP].hwsrc)
+                self.arpReply(pkt)
+        elif ICMP in pkt:
+            if pkt[ICMP].type == ICMP_TYPE_ECHO and pkt[ICMP].code == 0:
+                lg.info('%s receive ICMP echo to %s:\n' % (self.sw.name, pkt[IP].dst))
+                pkt.show()
+                if pkt[IP].dst in [p.IP() for p in self.sw.data_ports.values()]:
+                    # Reply ICMP echo request
+                    self.icmpReply(pkt)
+                else:
+                    arp_entry = self.arp_manager.arp_table.get(pkt[IP].dst)
+                    lg.info('%s prepare ARP entry: %s\n' % (self.sw.name, arp_entry))
+                    if arp_entry is None:
+                        lg.info('Missing ARP, request first\n')
+                        self.arpRequest(pkt[IP].dst, pkt[CPUMetadata].egressPort)
+                    self.pending_processor.future_send(pkt, time.time() + self.timeout)
+            else:
+                lg.debug('Receive other ICMP packet\n')
+        elif PWOSPF_Hdr in pkt and pkt[PWOSPF_Hdr].areaid == self.sw.area_id:
+            if PWOSPF_Hello in pkt:
+                inport = self.sw.data_ports[pkt[CPUMetadata].ingressPort]
+                neigh_id = pkt[PWOSPF_Hdr].routerid
+                neigh_ip = pkt[IP].src
+                helloint = pkt[PWOSPF_Hello].helloint
+                netmask = pkt[PWOSPF_Hello].netmask
+                # print(inport.intf.name, neigh_id, neigh_ip, datetime.now(), netmask, helloint)
+                inport.updateNeigh(neigh_id, neigh_ip, datetime.now(), netmask, helloint)
+                # print(inport.intf.name, inport.neighbors)
+            if PWOSPF_LSU in pkt:
+                self.pwospf_manager.handleLSU(pkt)
 
     def send(self, pkt, output, multicast=0, *args, **override_kwargs):
-        assert CPUMetadata in pkt, "Controller must send packets with special header"
+        # assert CPUMetadata in pkt, "Controller must send packets with special header"
+        if Ether not in pkt:
+            return
+        if CPUMetadata not in pkt:
+            pkt.payload = CPUMetadata() / pkt.payload
+            pkt.type = TYPE_CPU_METADATA
         pkt[CPUMetadata].fromCpu = 1
         pkt[CPUMetadata].multiCast = multicast
         pkt[CPUMetadata].egressPort = output
         kwargs = dict(iface=self.iface, verbose=False)
         kwargs.update(override_kwargs)
         sendp(pkt, *args, **kwargs)
+    
+    def arpRequest(self, ip, output):
+        mac = self.sw.data_ports[output].intf.MAC()
+        pkt = Ether(dst='ff:ff:ff:ff:ff:ff', src=mac) / CPUMetadata() / \
+            ARP(hwlen=6, plen=4, op=ARP_OP_REQ, hwsrc=mac,
+                psrc=self.sw.data_ports[output].IP(), hwdst='00:00:00:00:00:00', pdst=ip)
+        self.send(pkt, output)
+    
+    def arpReply(self, pkt):
+        inport = self.sw.data_ports[pkt[CPUMetadata].ingressPort]
+        port_mac = inport.intf.MAC()
+        pkt[Ether].dst = pkt[Ether].src
+        pkt[Ether].src = port_mac
+        pkt[ARP].op = ARP_OP_REPLY
+        pkt[ARP].hwdst = pkt[ARP].hwsrc
+        origpdst = pkt[ARP].pdst
+        pkt[ARP].pdst = pkt[ARP].psrc
+        if inport.ownIP(pkt[ARP].pdst):
+            pkt[ARP].psrc = inport.IP()
+        else:
+            pkt[ARP].psrc = origpdst
+        pkt[ARP].hwsrc = port_mac
+        self.send(pkt, pkt[CPUMetadata].ingressPort)
+    
+    def icmpReply(self, pkt):
+        # Reply ICMP
+        pkt[ICMP].type = 0
+        pkt[ICMP].chksum = None
+        ip_src = pkt[IP].src
+        pkt[IP].src = pkt[IP].dst
+        pkt[IP].dst = ip_src
+        mac_src = pkt[Ether].src
+        pkt[Ether].src = pkt[Ether].dst
+        pkt[Ether].dst = mac_src
+        lg.info('Send ICMP Reply from %s to port %d:\n' % (self.sw.name, pkt[CPUMetadata].ingressPort))
+        pkt.show()
+        self.send(pkt, pkt[CPUMetadata].ingressPort)
 
     def run(self):
         # listen on control port
-        # sniff(iface=self.iface, prn=self.onPacket, stop_event=self.stop_event)
         self.sniffer = AsyncSniffer(iface=self.iface, prn=self.onPacket)
         self.sniffer.start()
+        self.arp_manager.start()
+        self.pwospf_manager.start()
+        self.pending_processor.start()
+        self.start_all_interfaces()
 
     def start(self, *args, **kwargs):
         super(PWOSPFController, self).start(*args, **kwargs)
         time.sleep(self.start_wait)
+    
+    def start_all_interfaces(self):
+        """
+        Main loop for PWOSPF
+        """
+        for pn, p in self.sw.data_ports.items():
+            p.start(sendp=lambda _pkt, _pn: self.send(_pkt, _pn))
 
     def join(self, *args, **kwargs):
         if self.sniffer:
             self.sniffer.stop()
+        if self.arp_manager:
+            self.arp_manager.stop()
+        if self.pwospf_manager:
+            self.pwospf_manager.stop()
+        if self.pending_processor:
+            self.pending_processor.stop()
         super(PWOSPFController, self).join(*args, **kwargs)

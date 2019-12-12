@@ -8,7 +8,7 @@ const bit<16> ARP_OP_REPLY      = 0x0002;
 
 const bit<16> TYPE_ARP          = 0x0806;
 const bit<16> TYPE_IPV4         = 0x0800;
-const bit<16> TYPE_CPU_METADATA = 0x080a;
+const bit<16> TYPE_CPU_METADATA = 0x081a;
 
 typedef bit<9>  port_t;
 typedef bit<48> macAddr_t;
@@ -45,6 +45,12 @@ header ipv4_t {
     bit<16>   hdrChecksum;
     ipv4Addr_t srcAddr;
     ipv4Addr_t dstAddr;
+}
+
+header icmp_t {
+    bit<8> type;
+    bit<8> code;
+    bit<16> checksum;
 }
 
 header cpu_metadata_t {

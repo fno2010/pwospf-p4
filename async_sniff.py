@@ -83,6 +83,7 @@ class AsyncSniffer(object):
             self.stop_event.set()
             if join:
                 self.join()
+                self.running = False
                 return self.results
         else:
             raise Scapy_Exception("Not started !")
