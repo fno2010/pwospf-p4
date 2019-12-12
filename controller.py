@@ -266,7 +266,7 @@ class PWOSPFLSUManager(object):
             lg.warn('PWOSPF LSU Manager has not been started yet')
 
 class PWOSPFController(Thread):
-    def __init__(self, sw, ctrl_port=1, start_wait=0.3, timeout=1, arp_timeout=600):
+    def __init__(self, sw, ctrl_port=1, start_wait=5, timeout=1, arp_timeout=600):
         super(PWOSPFController, self).__init__()
         self.sw = sw
         self.start_wait = start_wait # time to wait for the controller to be listenning
@@ -300,8 +300,13 @@ class PWOSPFController(Thread):
         elif ICMP in pkt:
             if pkt[ICMP].type == ICMP_TYPE_ECHO and pkt[ICMP].code == 0:
                 lg.info('%s receive ICMP echo to %s:\n' % (self.sw.name, pkt[IP].dst))
-                pkt.show()
-                if pkt[IP].dst in [p.IP() for p in self.sw.data_ports.values()]:
+                if lg.getEffectiveLevel() <= LEVELS['debug']:
+                    pkt.show()
+                if pkt[CPUMetadata].ingressPort not in self.sw.data_ports:
+                    lg.warn('%s drops a packet received from an invalid port\n' % self.sw.name)
+                elif pkt[CPUMetadata].egressPort not in self.sw.data_ports:
+                    lg.warn('%s drops a packet targeting to an invalid port\n' % self.sw.name)
+                elif pkt[IP].dst in [p.IP() for p in self.sw.data_ports.values()]:
                     # Reply ICMP echo request
                     self.icmpReply(pkt)
                 else:
@@ -374,7 +379,8 @@ class PWOSPFController(Thread):
         pkt[Ether].src = pkt[Ether].dst
         pkt[Ether].dst = mac_src
         lg.info('Send ICMP Reply from %s to port %d:\n' % (self.sw.name, pkt[CPUMetadata].ingressPort))
-        pkt.show()
+        if lg.getEffectiveLevel() <= LEVELS['debug']:
+            pkt.show()
         self.send(pkt, pkt[CPUMetadata].ingressPort)
 
     def run(self):
