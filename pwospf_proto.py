@@ -1,10 +1,11 @@
 import struct
+from copy import deepcopy
 
 from scapy.fields import ByteField, ByteEnumField, LenField, IPField, \
     XShortField, ShortField, LongField, PadField, FieldLenField, PacketListField
 from scapy.packet import Packet, bind_layers
 from scapy.layers.inet import IP, DestIPField
-from scapy.layers.l2 import Ether, ARP
+from scapy.layers.l2 import Ether
 from scapy.utils import checksum
 
 PROTO_PWOSPF = 0x59
@@ -254,7 +255,10 @@ class PWOSPF_LSU(Packet):
                         length_from=lambda pkt: 12 * pkt.lsacount)
     ]
 
-bind_layers(IP, PWOSPF_Hdr, proto=PROTO_PWOSPF)
+Ether = deepcopy(Ether)
+IP = deepcopy(IP)
+
+# bind_layers(IP, PWOSPF_Hdr, proto=PROTO_PWOSPF)
 bind_layers(PWOSPF_Hdr, PWOSPF_Hello, type=1)
 bind_layers(PWOSPF_Hdr, PWOSPF_LSU, type=4)
-DestIPField.bind_addr(PWOSPF_Hdr, ALLSPFRouters_Addr)
+# DestIPField.bind_addr(PWOSPF_Hdr, ALLSPFRouters_Addr)

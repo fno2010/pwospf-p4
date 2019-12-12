@@ -11,7 +11,7 @@ from p4_program import P4Program
 from p4runtime_lib.error_utils import printGrpcError
 from scapy.all import Ether, IP
 
-from pwospf_proto import PWOSPF_Hdr, PWOSPF_Hello
+from pwospf_proto import PWOSPF_Hdr, PWOSPF_Hello, PROTO_PWOSPF, ALLSPFRouters_Addr
 from controller import PWOSPFController
 
 
@@ -167,7 +167,8 @@ class PWOSPFPort(object):
                     break
                 if datetime.now() >= self.lasthellotime + timedelta(seconds=self.helloint):
                     # generate hello packet
-                    hello_pkt = Ether(src=self.MAC(), dst='ff:ff:ff:ff:ff:ff') / IP(src=self.IP()) / \
+                    hello_pkt = Ether(src=self.MAC(), dst='ff:ff:ff:ff:ff:ff') / \
+                        IP(src=self.IP(), dst=ALLSPFRouters_Addr, proto=PROTO_PWOSPF) / \
                         PWOSPF_Hdr(routerid=self.router_id, areaid=self.area_id) / \
                         PWOSPF_Hello(netmask=self.Netmask(), helloint=self.helloint)
                     sendp(hello_pkt, self.portn)
