@@ -54,7 +54,7 @@ class PWOSPFPort(object):
         self.running = False
         self.stop_event = Event()
         self.lasthellotime = datetime(1900, 1, 1) # very early time
-    
+
     def config(self, ip=None):
         if '/' in ip:
             self.ipaddr, self.prefixlen = ip.split('/')
@@ -63,22 +63,22 @@ class PWOSPFPort(object):
             self.ipaddr = ip
             self.prefixlen = self.defaultPrefixlen
         self.netmask = 0xffffffff ^ (0xffffffff >> self.prefixlen)
-    
+
     def addNeighbor(self, neigh_id, neigh_ip):
         """
         Deprecated
         """
         self.neighbors.append(dict(neigh_id=neigh_id, neigh_ip=neigh_ip))
-    
+
     def MAC(self):
         return self.intf.MAC()
-    
+
     def IP(self):
         return str(self.ipaddr)
-    
+
     def Netmask(self):
         return self.Hex2IP(self.netmask)
-    
+
     def Hex2IP(self, iphex):
         o4 = iphex % 256
         iphex /= 256
@@ -88,7 +88,7 @@ class PWOSPFPort(object):
         iphex /= 256
         o1 = iphex % 256
         return '%d.%d.%d.%d' % (o1, o2, o3, o4)
-    
+
     def IPHex(self, ipaddr=None):
         if ipaddr is None:
             ipaddr = self.ipaddr
@@ -98,31 +98,31 @@ class PWOSPFPort(object):
         iphex = iphex*256 + o3
         iphex = iphex*256 + o4
         return iphex
-    
+
     def MaskedIPHex(self, ipaddr=None, netmask=None):
         if netmask is None:
             netmask = self.netmask
         return self.IPHex(ipaddr) & netmask
-    
+
     def ownIP(self, ipaddr):
         return self.MaskedIPHex(ipaddr) == self.MaskedIPHex()
-    
+
     def ownNeigh(self, rid):
         for neigh in self.neighbors:
             if neigh[0] == rid:
                 return neigh[1]
         return None
-    
+
     def _setup_thread(self, **kwargs):
         self.thread = Thread(target=self._hello, kwargs=kwargs)
         self.thread.setDaemon(True)
-    
+
     def start(self, sendp=None):
         if sendp is None:
             raise Exception('Must provide callback function sendp')
         self._setup_thread(sendp=sendp)
         self.thread.start()
-    
+
     def _hello(self, sendp=None):
         """
         PWOSPF Hello Protocol:
@@ -176,7 +176,7 @@ class PWOSPFPort(object):
                         del self.neighbors[neigh]
         except KeyboardInterrupt:
             pass
-    
+
     def updateNeigh(self, neigh_id, neigh_ip, lasttime, netmask, helloint):
         """
         Handling Incoming HELLO Packets
@@ -205,7 +205,7 @@ class PWOSPFPort(object):
             lg.debug('hello packet mismatch')
             return
         self.neighbors[(neigh_id, neigh_ip)] = (lasttime, helloint)
-    
+
     def stop(self):
         if self.running:
             self.stop_event.set()
@@ -243,6 +243,7 @@ class PWOSPFRouter(P4RuntimeSwitch):
         self.static_routes = dict()
         self.pwospf_table = dict()
         self.pending_pwospf_table = dict()
+        self.commands = dict()
 
         self.controller = None
 
@@ -277,14 +278,14 @@ class PWOSPFRouter(P4RuntimeSwitch):
         })
 
         P4RuntimeSwitch.__init__(self, name, *opts, **kwargs)
-    
+
     def deleteTableEntry(self, entry=None,
                          table_name=None, match_fields=None, priority=None):
         if entry is not None:
             table_name = entry['table']
             match_fields = entry.get('match') # None if not found
             priority = entry.get('priority')  # None if not found
-        
+
         table_entry = self.p4info_helper.buildTableEntry(
             table_name=table_name,
             match_fields=match_fields,
@@ -293,7 +294,7 @@ class PWOSPFRouter(P4RuntimeSwitch):
             self.WriteTableEntry(table_entry, update_type=p4runtime_pb2.Update.DELETE)
         except grpc.RpcError as e:
             printGrpcError(e)
-    
+
     def WriteTableEntry(self, table_entry, update_type=None, dry_run=False):
         request = p4runtime_pb2.WriteRequest()
         request.device_id = self.device_id
@@ -317,19 +318,19 @@ class PWOSPFRouter(P4RuntimeSwitch):
             flood_ports = [p for p in data_ports if p != pt]
             self.addMulticastGroup(mgid=pt, ports=flood_ports)
             self.addMulticastGroup(mgid=pt|0x800, ports=[pt, self.ctrl_port])
-    
+
     def addL3Route(self, ipprefix, next_hop, gateway):
         ip, prefixlen = ipprefix.split('/')
         self.insertTableEntry(table_name='PWOSPFIngress.routing_table',
                               match_fields={'hdr.ipv4.dstAddr': [ip, int(prefixlen)]},
                               action_name='PWOSPFIngress.ipv4_forward',
                               action_params={'port': next_hop, 'gateway': gateway})
-    
+
     def removeL3Route(self, ipprefix):
         ip, prefixlen = ipprefix.split('/')
         self.deleteTableEntry(table_name='PWOSPFIngress.routing_table',
                               match_fields={'hdr.ipv4.dstAddr': [ip, int(prefixlen)]})
-    
+
     def showRXCounters(self):
         print('RX:')
         cpkt, cbyte = self.readCounter('PWOSPFEgress.outputCounter', self.ctrl_port)
@@ -349,7 +350,7 @@ class PWOSPFRouter(P4RuntimeSwitch):
         for pn in self.data_ports:
             cpkt, cbyte = self.readCounter('PWOSPFIngress.arpInputCounter', pn)
             print('\t%s: %d pkts, %d bytes' % (self.data_ports[pn].intf.name, cpkt, cbyte))
-    
+
     def showTXCounters(self):
         print('TX:')
         cpkt, cbyte = self.readCounter('PWOSPFIngress.inputCounter', self.ctrl_port)
@@ -369,6 +370,55 @@ class PWOSPFRouter(P4RuntimeSwitch):
         for pn in self.data_ports:
             cpkt, cbyte = self.readCounter('PWOSPFEgress.arpOutputCounter', pn)
             print('\t%s: %d pkts, %d bytes' % (self.data_ports[pn].intf.name, cpkt, cbyte))
+
+    def showIPRoute(self):
+        print('prefix\tnext-hop\tinterface')
+        for route in self.pwospf_table.values():
+            print('%s\t%s\t%s' % (route[0], route[1], self.data_ports[route[2]].intf.name))
+
+    def do_show(self, *args, **kwargs):
+        usage = (
+            "Usage:\n"
+            "\tinterface\tinformation of interfaces\n"
+            "\tip\tinformation of ip forwarding\n"
+        )
+        cmd = args[0] if len(args) > 0 else None
+        args = args[1:]
+        if cmd == 'interface':
+            self.do_show_int(*args, **kwargs)
+        elif cmd == 'ip':
+            self.do_show_ip(*args, **kwargs)
+        else:
+            print(usage)
+
+    def do_show_int(self, *args, **kwargs):
+        usage = (
+            "Usage:\n"
+            "tx\tshow TX statistics\n"
+            "rx\tshow RX statistics\n"
+            "all\tshow both TX and RX statistics\n"
+        )
+        cmd = args[0] if len(args) > 0 else None
+        if cmd == 'tx':
+            self.showTXCounters()
+        elif cmd == 'rx':
+            self.showRXCounters()
+        elif cmd == 'all':
+            self.showTXCounters()
+            self.showRXCounters()
+        else:
+            print(usage)
+
+    def do_show_ip(self, *args, **kwargs):
+        usage = (
+            "Usage:\n"
+            "route\tshow routing table\n"
+        )
+        cmd = args[0] if len(args) > 0 else None
+        if cmd == 'route':
+            self.showIPRoute()
+        else:
+            print(usage)
 
     def initTable(self):
         for pn, p in self.data_ports.items():
@@ -395,6 +445,17 @@ class PWOSPFRouter(P4RuntimeSwitch):
                                   action_name='PWOSPFIngress.punt',
                                   action_params={})
 
+    def sendCmd(self, *args, **kwargs):
+        """
+        Override the original sendCmd method.
+        """
+        if len(args) == 1 and isinstance(args[0], str):
+            _args = args[0].split(' ')
+            if len(_args) > 0 and _args[0] in self.commands:
+                self.commands[_args[0]](*_args[1:], **kwargs)
+                return
+        super(PWOSPFRouter, self).sendCmd(*args, **kwargs)
+
     def startup(self):
         """
         Startup configuration of router
@@ -409,6 +470,9 @@ class PWOSPFRouter(P4RuntimeSwitch):
         for ipprefix, route in self.static_routes.items():
             self.addL3Route(str(ipprefix), route[0], route[1])
 
+    def register_commands(self):
+        self.commands['show'] = self.do_show
+
     def start(self, controllers):
         super(PWOSPFRouter, self).start(controllers)
         self.startup()
@@ -416,6 +480,7 @@ class PWOSPFRouter(P4RuntimeSwitch):
         self.initTable()
         self.controller = PWOSPFController(self, **self.ctrl_args)
         self.controller.start()
+        self.register_commands()
 
     def stop(self):
         for p in self.data_ports.values():
