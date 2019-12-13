@@ -343,7 +343,10 @@ class PWOSPFController(Thread):
                     helloint = pwospf_pkt[PWOSPF_Hello].helloint
                     netmask = pwospf_pkt[PWOSPF_Hello].netmask
                     # print(inport.intf.name, neigh_id, neigh_ip, datetime.now(), netmask, helloint)
-                    inport.updateNeigh(neigh_id, neigh_ip, datetime.now(), netmask, helloint)
+                    if inport.ownIP(neigh_ip):
+                        inport.updateNeigh(neigh_id, neigh_ip, datetime.now(), netmask, helloint)
+                    else:
+                        lg.debug('%s drop the hello packet from different subnets\n' % self.sw.name)
                     # print(inport.intf.name, inport.neighbors)
                 if PWOSPF_LSU in pwospf_pkt:
                     self.pwospf_manager.handleLSU(pkt)
