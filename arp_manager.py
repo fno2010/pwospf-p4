@@ -14,19 +14,24 @@ class ARPManager(object):
         self.stop_event = Event()
     
     def updateArpTable(self, ip, mac):
+        write = True
         if ip in self.arp_table:
-            lg.debug('%s was cached. cleanup now.' % ip)
-            self.sw.deleteTableEntry(table_name='PWOSPFIngress.arp_table',
-                                     match_fields={'meta.gateway': ip})
+            if self.arp_table[ip]['mac'] != mac:
+                lg.debug('%s cache should be changed. cleanup now.' % ip)
+                self.sw.deleteTableEntry(table_name='PWOSPFIngress.arp_table',
+                                         match_fields={'meta.gateway': ip})
+            else:
+                write = False
         self.arp_table[ip] = {
             'mac': mac,
             'expiry': datetime.now() + timedelta(seconds=self.arp_timeout)
         }
 
-        self.sw.insertTableEntry(table_name='PWOSPFIngress.arp_table',
-                                 match_fields={'meta.gateway': ip},
-                                 action_name='PWOSPFIngress.update_dst_mac',
-                                 action_params={'dstEth': mac})
+        if write:
+            self.sw.insertTableEntry(table_name='PWOSPFIngress.arp_table',
+                                     match_fields={'meta.gateway': ip},
+                                     action_name='PWOSPFIngress.update_dst_mac',
+                                     action_params={'dstEth': mac})
     
     def _setup_thread(self):
         self.thread = Thread(target=self._run)

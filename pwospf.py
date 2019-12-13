@@ -379,6 +379,12 @@ class PWOSPFRouter(P4RuntimeSwitch):
         for route in self.pwospf_table.values():
             print('%s\t%s\t%s' % (route[0], route[1], self.data_ports[route[2]].intf.name))
 
+    def showIPARP(self):
+        print('ip address\tmac address')
+        arp_table = self.controller.arp_manager.arp_table.copy()
+        for ip in arp_table:
+            print('%s\t%s' % (ip, arp_table[ip]['mac']))
+
     def do_show(self, *args, **kwargs):
         usage = (
             "Usage:\n"
@@ -397,9 +403,9 @@ class PWOSPFRouter(P4RuntimeSwitch):
     def do_show_int(self, *args, **kwargs):
         usage = (
             "Usage:\n"
-            "tx\tshow TX statistics\n"
-            "rx\tshow RX statistics\n"
-            "all\tshow both TX and RX statistics\n"
+            "\ttx\tshow TX statistics\n"
+            "\trx\tshow RX statistics\n"
+            "\tall\tshow both TX and RX statistics\n"
         )
         cmd = args[0] if len(args) > 0 else None
         if cmd == 'tx':
@@ -416,10 +422,13 @@ class PWOSPFRouter(P4RuntimeSwitch):
         usage = (
             "Usage:\n"
             "route\tshow routing table\n"
+            "arp\tshow arp table\n"
         )
         cmd = args[0] if len(args) > 0 else None
         if cmd == 'route':
             self.showIPRoute()
+        elif cmd == 'arp':
+            self.showIPARP()
         else:
             print(usage)
 
