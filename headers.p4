@@ -8,7 +8,7 @@ const bit<16> ARP_OP_REPLY      = 0x0002;
 
 const bit<16> TYPE_ARP          = 0x0806;
 const bit<16> TYPE_IPV4         = 0x0800;
-const bit<16> TYPE_CPU_METADATA = 0x081a;
+const bit<16> TYPE_CPU_METADATA = 0x081b;
 
 typedef bit<9>  port_t;
 typedef bit<48> macAddr_t;

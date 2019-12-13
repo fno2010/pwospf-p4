@@ -255,8 +255,8 @@ class PWOSPF_LSU(Packet):
                         length_from=lambda pkt: 12 * pkt.lsacount)
     ]
 
-Ether = deepcopy(Ether)
-IP = deepcopy(IP)
+    def extract_padding(self, s):
+        return '', s
 
 # bind_layers(IP, PWOSPF_Hdr, proto=PROTO_PWOSPF)
 bind_layers(PWOSPF_Hdr, PWOSPF_Hello, type=1)

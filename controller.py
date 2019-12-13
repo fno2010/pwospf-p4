@@ -171,23 +171,26 @@ class PWOSPFLSUManager(object):
         if rid in self.lsdb and pwospf_pkt[PWOSPF_LSU].seq == self.lsdb[rid]['seq']:
             return
         self.lsulock.acquire()
-        # update lsu in database
-        # print(self.sw.name, pkt[PWOSPF_LSU])
-        self.lsdb[rid] = {
-            'seq': pwospf_pkt[PWOSPF_LSU].seq,
-            'lasttime': datetime.now(),
-            'networks': [(lsa.subnet, lsa.mask, lsa.routerid) for lsa in pwospf_pkt[PWOSPF_LSU].lsalist]
-        }
-        # flood received lsu
-        pwospf_pkt[PWOSPF_LSU].ttl -= 1
-        for pn, p in self.sw.data_ports.items():
-            if not p.neighbors:
-                continue
-            if pn == pkt[CPUMetadata].ingressPort:
-                continue
-            if pwospf_pkt[PWOSPF_LSU].ttl > 0:
-                pkt[Raw].load = pwospf_pkt.build()
-                self.sw.controller.send(pkt, pn)
+        try:
+            # update lsu in database
+            # print(self.sw.name, pwospf_pkt)
+            self.lsdb[rid] = {
+                'seq': pwospf_pkt[PWOSPF_LSU].seq,
+                'lasttime': datetime.now(),
+                'networks': [(lsa.subnet, lsa.mask, lsa.routerid) for lsa in pwospf_pkt[PWOSPF_LSU].lsalist]
+            }
+            # flood received lsu
+            pwospf_pkt[PWOSPF_LSU].ttl -= 1
+            for pn, p in self.sw.data_ports.items():
+                if not p.neighbors:
+                    continue
+                if pn == pkt[CPUMetadata].ingressPort:
+                    continue
+                if pwospf_pkt[PWOSPF_LSU].ttl > 0:
+                    pkt[Raw].load = pwospf_pkt.build()
+                    self.sw.controller.send(pkt, pn)
+        except:
+            traceback.print_exc()
         # update forwarding table
         try:
             self.updateRoutingTable()
@@ -292,53 +295,62 @@ class PWOSPFController(Thread):
         # Ignore packets that the CPU sends:
         if pkt[CPUMetadata].fromCpu == 1: return
 
-        if ARP in pkt:
-            if pkt[ARP].op == ARP_OP_REPLY:
-                self.arp_manager.updateArpTable(pkt[ARP].psrc, pkt[ARP].hwsrc)
-                # self.send(pkt, 0)
-            elif pkt[ARP].op == ARP_OP_REQ:
-                self.arp_manager.updateArpTable(pkt[ARP].psrc, pkt[ARP].hwsrc)
-                self.arpReply(pkt)
-        elif ICMP in pkt:
-            if pkt[ICMP].type == ICMP_TYPE_ECHO and pkt[ICMP].code == 0:
-                lg.info('%s receive ICMP echo to %s:\n' % (self.sw.name, pkt[IP].dst))
-                if lg.getEffectiveLevel() <= LEVELS['debug']:
-                    pkt.show()
-                if pkt[CPUMetadata].ingressPort not in self.sw.data_ports:
-                    lg.warn('%s drops a packet received from an invalid port\n' % self.sw.name)
-                elif pkt[CPUMetadata].egressPort not in self.sw.data_ports:
-                    lg.warn('%s drops a packet targeting to an invalid port\n' % self.sw.name)
-                elif pkt[IP].dst in [p.IP() for p in self.sw.data_ports.values()]:
-                    # Reply ICMP echo request
-                    self.icmpReply(pkt)
+        try:
+            if ARP in pkt:
+                if pkt[ARP].op == ARP_OP_REPLY:
+                    self.arp_manager.updateArpTable(pkt[ARP].psrc, pkt[ARP].hwsrc)
+                    # self.send(pkt, 0)
+                elif pkt[ARP].op == ARP_OP_REQ:
+                    self.arp_manager.updateArpTable(pkt[ARP].psrc, pkt[ARP].hwsrc)
+                    self.arpReply(pkt)
+            elif ICMP in pkt:
+                if pkt[ICMP].type == ICMP_TYPE_ECHO and pkt[ICMP].code == 0:
+                    lg.info('%s receive ICMP echo to %s:\n' % (self.sw.name, pkt[IP].dst))
+                    if lg.getEffectiveLevel() <= LEVELS['debug']:
+                        pkt.show()
+                    if pkt[CPUMetadata].ingressPort not in self.sw.data_ports:
+                        lg.warn('%s drops a packet received from an invalid port\n' % self.sw.name)
+                    elif pkt[CPUMetadata].egressPort not in self.sw.data_ports:
+                        lg.warn('%s drops a packet targeting to an invalid port\n' % self.sw.name)
+                    elif pkt[IP].dst in [p.IP() for p in self.sw.data_ports.values()]:
+                        # Reply ICMP echo request
+                        self.icmpReply(pkt)
+                    else:
+                        arp_entry = self.arp_manager.arp_table.get(pkt[IP].dst)
+                        lg.info('%s prepare ARP entry: %s\n' % (self.sw.name, arp_entry))
+                        if arp_entry is None:
+                            lg.info('Missing ARP, request first\n')
+                            self.arpRequest(pkt[IP].dst, pkt[CPUMetadata].egressPort)
+                        self.pending_processor.future_send(pkt, time.time() + self.timeout)
                 else:
-                    arp_entry = self.arp_manager.arp_table.get(pkt[IP].dst)
-                    lg.info('%s prepare ARP entry: %s\n' % (self.sw.name, arp_entry))
-                    if arp_entry is None:
-                        lg.info('Missing ARP, request first\n')
-                        self.arpRequest(pkt[IP].dst, pkt[CPUMetadata].egressPort)
-                    self.pending_processor.future_send(pkt, time.time() + self.timeout)
-            else:
-                lg.debug('Receive other ICMP packet\n')
-        elif IP in pkt and pkt[IP].proto == PROTO_PWOSPF:
-            lg.info('%s received a PWOSPF packet' % self.sw.name)
-            pwospf_pkt = PWOSPF_Hdr(pkt[Raw])
-            if lg.getEffectiveLevel() <= LEVELS['info']:
-                pwospf_pkt.show()
-            if pwospf_pkt.areaid != self.sw.area_id:
-                lg.info('%s drops PWOSPF packet from a different area\n' % self.sw.name)
-                return
-            if PWOSPF_Hello in pwospf_pkt:
-                inport = self.sw.data_ports[pkt[CPUMetadata].ingressPort]
-                neigh_id = pwospf_pkt[PWOSPF_Hdr].routerid
-                neigh_ip = pkt[IP].src
-                helloint = pwospf_pkt[PWOSPF_Hello].helloint
-                netmask = pwospf_pkt[PWOSPF_Hello].netmask
-                # print(inport.intf.name, neigh_id, neigh_ip, datetime.now(), netmask, helloint)
-                inport.updateNeigh(neigh_id, neigh_ip, datetime.now(), netmask, helloint)
-                # print(inport.intf.name, inport.neighbors)
-            if PWOSPF_LSU in pwospf_pkt:
-                self.pwospf_manager.handleLSU(pkt)
+                    lg.debug('Receive other ICMP packet\n')
+            elif IP in pkt and pkt[IP].proto == PROTO_PWOSPF:
+                lg.info('%s received a PWOSPF packet' % self.sw.name)
+                try:
+                    pwospf_pkt = PWOSPF_Hdr(pkt[Raw])
+                except Exception:
+                    lg.debug('%s cannot parse this PWOSPF packet correctly\n' % self.sw.name)
+                    return
+                if lg.getEffectiveLevel() <= LEVELS['info']:
+                    pwospf_pkt.show()
+                if pwospf_pkt.areaid != self.sw.area_id:
+                    lg.info('%s drops PWOSPF packet from a different area\n' % self.sw.name)
+                    return
+                if PWOSPF_Hello in pwospf_pkt:
+                    inport = self.sw.data_ports[pkt[CPUMetadata].ingressPort]
+                    neigh_id = pwospf_pkt[PWOSPF_Hdr].routerid
+                    neigh_ip = pkt[IP].src
+                    helloint = pwospf_pkt[PWOSPF_Hello].helloint
+                    netmask = pwospf_pkt[PWOSPF_Hello].netmask
+                    # print(inport.intf.name, neigh_id, neigh_ip, datetime.now(), netmask, helloint)
+                    inport.updateNeigh(neigh_id, neigh_ip, datetime.now(), netmask, helloint)
+                    # print(inport.intf.name, inport.neighbors)
+                if PWOSPF_LSU in pwospf_pkt:
+                    self.pwospf_manager.handleLSU(pkt)
+        except:
+            lg.warn('Some exceptions raised when handle the incoming packet; enable debug mode to see details\n')
+            if lg.getEffectiveLevel() <= LEVELS['warning']:
+                traceback.print_exc()
 
     def send(self, pkt, output, multicast=0, *args, **override_kwargs):
         # assert CPUMetadata in pkt, "Controller must send packets with special header"
