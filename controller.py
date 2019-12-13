@@ -124,7 +124,7 @@ class PWOSPFLSUManager(object):
                     lsalist.append(PWOSPF_LSA(subnet=p.Hex2IP(p.MaskedIPHex(neigh[1])), mask=p.Netmask(), routerid=neigh[0]))
 
         lsu_pkt = PWOSPF_Hdr(routerid=self.sw.router_id, areaid=self.sw.area_id) / PWOSPF_LSU(seq=self.seq, lsalist=lsalist)
-        eth_pkt = Ether() / IP(src=self.sw.router_id, dst=ALLSPFRouters_Addr, proto=PROTO_PWOSPF) / lsu_pkt
+        eth_pkt_builder = lambda dst: (Ether() / IP(src=self.sw.router_id, dst=dst, proto=PROTO_PWOSPF) / lsu_pkt)
         self.lsulock.acquire()
         self.lsdb[self.sw.router_id] = {
             'seq': self.seq,
@@ -133,7 +133,10 @@ class PWOSPFLSUManager(object):
         }
         self.lsulock.release()
         self.seq += 1
-        self.sw.controller.send(eth_pkt, 1, multicast=True)
+        # self.sw.controller.send(eth_pkt, 1, multicast=True)
+        for pn, p in self.sw.data_ports.items():
+            for neigh in p.neighbors.keys():
+                self.sw.controller.send(eth_pkt_builder(neigh[1]), pn)
 
     def start(self):
         self._setup_thread()
