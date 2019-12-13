@@ -356,7 +356,7 @@ class PWOSPFController(Thread):
                     outport = self.sw.data_ports[pkt[CPUMetadata].egressPort]
                     dstprefix = ipprefix(pkt[IP].dst, outport.Netmask())
                     route = self.sw.pwospf_table.get(dstprefix)
-                    print(dstprefix, route)
+                    # print(dstprefix, route)
                     if route is None:
                         return
                     gateway = route[1]
